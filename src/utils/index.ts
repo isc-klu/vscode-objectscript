@@ -460,7 +460,7 @@ export function notNull(el: any): boolean {
   return el !== null;
 }
 
-/** Determine the compose command to use (`docker-compose` or `docker compose` or `podman-compose`).  */
+/** Determine the compose command to use (`docker-compose`, `docker compose`, `podman compose`, or `podman-compose`).  */
 async function composeCommand(cwd?: string): Promise<string> {
   return new Promise<string>((resolve) => {
     let cmd = "docker compose";
@@ -471,10 +471,16 @@ async function composeCommand(cwd?: string): Promise<string> {
       }
       exec(`${cmd} version`, { cwd }, (error) => {
         if (error) {
-          // Neither Docker Compose variant is present; fall back to Podman Compose
-          cmd = "podman-compose";
+          // Neither Docker Compose variant is present; try Podman Compose. 'podman compose' can locate a
+          // provider that a plain PATH lookup for 'podman-compose' wouldn't, so try it first.
+          cmd = "podman compose";
         }
-        resolve(cmd);
+        exec(`${cmd} version`, { cwd }, (error) => {
+          if (error) {
+            cmd = "podman-compose";
+          }
+          resolve(cmd);
+        });
       });
     });
   });
@@ -599,7 +605,7 @@ export async function portFromDockerCompose(
   const envFileParam = envFile ? `--env-file ${envFile}` : "";
   const cmd = `${await composeCommand(cwd)} -f ${file} ${envFileParam} `;
 
-  if (cmd.startsWith("podman-compose ")) {
+  if (cmd.startsWith("podman compose ") || cmd.startsWith("podman-compose ")) {
     return portFromPodmanCompose(cmd, cwd, file, service, internalPort, internalSuperserverPort, dockerCompose, result);
   }
 
@@ -654,7 +660,7 @@ export async function terminalWithDocker(): Promise<vscode.Terminal> {
   if (!terminal) {
     let exe = await composeCommand();
     const argsArr: string[] = [];
-    if (exe == "docker compose") {
+    if (exe.includes(" ")) {
       const exeSplit = exe.split(" ");
       exe = exeSplit[0];
       argsArr.push(exeSplit[1]);
@@ -689,7 +695,7 @@ export async function shellWithDocker(): Promise<vscode.Terminal> {
   if (!terminal) {
     let exe = await composeCommand();
     const argsArr: string[] = [];
-    if (exe == "docker compose") {
+    if (exe.includes(" ")) {
       const exeSplit = exe.split(" ");
       exe = exeSplit[0];
       argsArr.push(exeSplit[1]);
