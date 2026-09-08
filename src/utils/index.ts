@@ -1,6 +1,5 @@
 import path = require("path");
 import { exec } from "child_process";
-import { promisify } from "util";
 import * as vscode from "vscode";
 import { lt } from "semver";
 import {
@@ -530,14 +529,17 @@ async function portFromPodmanCompose(
   result.superserverPort = parseInt(superserverPort, 10);
   return result;
 
-  // Runs a compose subcommand and returns its stdout, converting a failed exec into a plain-string rejection.
-  async function run(args: string): Promise<string> {
-    try {
-      const { stdout } = await promisify(exec)(`${cmd} ${args}`, { cwd });
-      return stdout;
-    } catch (error: any) {
-      throw error.message;
-    }
+  // Runs a compose subcommand and returns its stdout, rejecting with a plain string on failure.
+  function run(args: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      exec(`${cmd} ${args}`, { cwd }, (error, stdout) => {
+        if (error) {
+          reject(error.message);
+          return;
+        }
+        resolve(stdout);
+      });
+    });
   }
 
   function parsePort(stdout: string) {
