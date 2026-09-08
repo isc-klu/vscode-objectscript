@@ -8,9 +8,8 @@ import BasicAuthorization, {
   extensionContext,
   workspaceState,
   panel,
-  checkConnection,
+  ensureConnection,
   schemas,
-  checkingConnection,
   inactiveServerIds,
 } from "../extension";
 import { currentWorkspaceFolder, outputChannel, outputConsole } from "../utils";
@@ -347,7 +346,6 @@ export class AtelierAPI {
       _retriedAfter401?: boolean;
     }
   ): Promise<any> {
-    const effectiveCheckingConnection = options?.checkingConnection ?? checkingConnection;
     const { active, apiVersion, host, port, https } = this.config;
     if (!active || !port || !host) {
       return Promise.reject();
@@ -477,7 +475,7 @@ export class AtelierAPI {
       if (response.status === 401) {
         authRequestMap.delete(mapKey);
         cookiesMap.delete(mapKey);
-        if (this.wsOrFile && !effectiveCheckingConnection) {
+        if (this.wsOrFile && !options?.checkingConnection) {
           if (!options?._retriedAfter401) {
             return this.request(minVersion, method, originalPath, body, params, headers, {
               ...options,
@@ -485,7 +483,7 @@ export class AtelierAPI {
             });
           }
           setTimeout(() => {
-            checkConnection(
+            ensureConnection(
               this.config.auth.resolved(),
               typeof this.wsOrFile === "object" ? this.wsOrFile : undefined,
               true
@@ -608,8 +606,8 @@ export class AtelierAPI {
         panel.tooltip = "Disconnected";
         workspaceState.update(this.configName.toLowerCase() + ":host", undefined);
         workspaceState.update(this.configName.toLowerCase() + ":port", undefined);
-        if (!effectiveCheckingConnection) {
-          setTimeout(() => checkConnection(false, undefined, true), 30000);
+        if (!options?.checkingConnection) {
+          setTimeout(() => ensureConnection(false, undefined, true), 30000);
         }
       }
       throw error;
