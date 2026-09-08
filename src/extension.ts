@@ -546,9 +546,6 @@ export async function ensureConnection(
                   if (error?.statusCode != 401) errorMessage = undefined;
                   await workspaceState.update(wsKey + ":password", undefined);
                   success = false;
-                })
-                .finally(() => {
-                  connectionsBeingChecked.delete(configName);
                 });
             }
           } else {
@@ -580,9 +577,6 @@ export async function ensureConnection(
                         if (error?.statusCode != 401) errorMessage = undefined;
                         await workspaceState.update(wsKey + ":password", undefined);
                         return false;
-                      })
-                      .finally(() => {
-                        connectionsBeingChecked.delete(configName);
                       })
                   );
                 } else {
