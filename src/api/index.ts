@@ -328,13 +328,26 @@ export class AtelierAPI {
 
   private async request(
     minVersion: number,
-    method: string,
+    method: "GET" | "HEAD" | "PUT" | "POST" | "DELETE",
     path?: string,
     body?: any,
     params?: any,
     headers?: any,
-    options?: any
+    options?: {
+      /** Abort the request if it hasn't completed within this many milliseconds. */
+      timeout?: number;
+      /** Suppress writing this request/response to the ObjectScript output channel, even when `objectscript.outputRESTTraffic` is on. */
+      noOutput?: boolean;
+      /**
+       * On a 401 or network error, suppress the automatic retry/self-heal handling (a single retry
+       * with fresh credentials, or scheduling a connection check), leaving the error to the caller.
+       */
+      checkingConnection?: boolean;
+      /** On a 401 response, suppress the automatic single retry with fresh credentials. */
+      _retriedAfter401?: boolean;
+    }
   ): Promise<any> {
+    const effectiveCheckingConnection = options?.checkingConnection ?? checkingConnection;
     const { active, apiVersion, host, port, https } = this.config;
     if (!active || !port || !host) {
       return Promise.reject();
@@ -365,7 +378,6 @@ export class AtelierAPI {
       });
       return result.length ? "?" + result.join("&") : "";
     };
-    method = method.toUpperCase();
     if (body && !headers["Content-Type"]) {
       headers["Content-Type"] = "application/json";
     }
@@ -465,7 +477,7 @@ export class AtelierAPI {
       if (response.status === 401) {
         authRequestMap.delete(mapKey);
         cookiesMap.delete(mapKey);
-        if (this.wsOrFile && !checkingConnection) {
+        if (this.wsOrFile && !effectiveCheckingConnection) {
           if (!options?._retriedAfter401) {
             return this.request(minVersion, method, originalPath, body, params, headers, {
               ...options,
@@ -596,7 +608,7 @@ export class AtelierAPI {
         panel.tooltip = "Disconnected";
         workspaceState.update(this.configName.toLowerCase() + ":host", undefined);
         workspaceState.update(this.configName.toLowerCase() + ":port", undefined);
-        if (!checkingConnection) {
+        if (!effectiveCheckingConnection) {
           setTimeout(() => checkConnection(false, undefined, true), 30000);
         }
       }
@@ -605,7 +617,10 @@ export class AtelierAPI {
   }
 
   public serverInfo(checkNs = true, timeout?: number): Promise<Atelier.Response<Atelier.Content<Atelier.ServerInfo>>> {
-    return this.request(0, "GET", undefined, undefined, undefined, undefined, { timeout }).then((info) => {
+    return this.request(0, "GET", undefined, undefined, undefined, undefined, {
+      timeout,
+      checkingConnection: false,
+    }).then((info) => {
       if (info && info.result && info.result.content && info.result.content.api > 0) {
         const data = info.result.content;
         const apiVersion = data.api;
