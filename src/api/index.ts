@@ -120,10 +120,8 @@ export class AtelierAPI {
     return filename;
   }
 
-  public constructor(wsOrFile?: string | vscode.Uri, retryAfter401 = true) {
-    if (retryAfter401) {
-      this.wsOrFile = wsOrFile;
-    }
+  public constructor(wsOrFile?: string | vscode.Uri) {
+    this.wsOrFile = wsOrFile;
     let workspaceFolderName = "";
     let namespace = "";
     if (wsOrFile) {
@@ -337,11 +335,6 @@ export class AtelierAPI {
       timeout?: number;
       /** Suppress writing this request/response to the ObjectScript output channel, even when `objectscript.outputRESTTraffic` is on. */
       noOutput?: boolean;
-      /**
-       * On a 401 or network error, suppress the automatic retry/self-heal handling (a single retry
-       * with fresh credentials, or scheduling a connection check), leaving the error to the caller.
-       */
-      checkingConnection?: boolean;
       /** On a 401 response, suppress the automatic single retry with fresh credentials. */
       _retriedAfter401?: boolean;
     }
@@ -475,7 +468,7 @@ export class AtelierAPI {
       if (response.status === 401) {
         authRequestMap.delete(mapKey);
         cookiesMap.delete(mapKey);
-        if (this.wsOrFile && !options?.checkingConnection) {
+        if (this.wsOrFile) {
           if (!options?._retriedAfter401) {
             return this.request(minVersion, method, originalPath, body, params, headers, {
               ...options,
@@ -606,19 +599,14 @@ export class AtelierAPI {
         panel.tooltip = "Disconnected";
         workspaceState.update(this.configName.toLowerCase() + ":host", undefined);
         workspaceState.update(this.configName.toLowerCase() + ":port", undefined);
-        if (!options?.checkingConnection) {
-          setTimeout(() => ensureConnection(false, undefined, true), 30000);
-        }
+        setTimeout(() => ensureConnection(false, undefined, true), 30000);
       }
       throw error;
     }
   }
 
   public serverInfo(checkNs = true, timeout?: number): Promise<Atelier.Response<Atelier.Content<Atelier.ServerInfo>>> {
-    return this.request(0, "GET", undefined, undefined, undefined, undefined, {
-      timeout,
-      checkingConnection: false,
-    }).then((info) => {
+    return this.request(0, "GET", undefined, undefined, undefined, undefined, { timeout }).then((info) => {
       if (info && info.result && info.result.content && info.result.content.api > 0) {
         const data = info.result.content;
         const apiVersion = data.api;

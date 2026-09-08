@@ -408,7 +408,7 @@ export async function ensureConnection(
     await workspaceState.update(wsKey + ":docker", undefined);
     _onDidChangeConnection.fire();
   }
-  let api = new AtelierAPI(apiTarget, false);
+  let api = new AtelierAPI(apiTarget);
   const { active, host = "", port = 0, superserverPort = 0, ns = "", auth } = api.config;
   vscode.commands.executeCommand("setContext", "vscode-objectscript.connectActive", active);
   if (!panel.text) {
@@ -472,7 +472,7 @@ export async function ensureConnection(
   if (api.externalServer) {
     inactiveServerIds.delete(api.serverId);
   }
-  api = new AtelierAPI(apiTarget, false);
+  api = new AtelierAPI(apiTarget);
 
   if (!api.config.host || !api.config.port || !api.config.ns) {
     const message = "'host', 'port' and 'ns' must be specified.";
@@ -533,7 +533,7 @@ export async function ensureConnection(
             if (newSpec) {
               // We were able to resolve credentials, so try again
               await workspaceState.update(wsKey + ":password", newSpec.auth?.accessToken);
-              api = new AtelierAPI(apiTarget, false);
+              api = new AtelierAPI(apiTarget);
               await api
                 .serverInfo(true, serverInfoTimeout)
                 .then(async (info) => {
