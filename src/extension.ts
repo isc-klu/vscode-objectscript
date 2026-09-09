@@ -1601,7 +1601,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<server
         try {
           await ensureConnection(true, wsFolder.uri, true);
         } catch {
-          // Errors are handled by checkConnection()
+          // Errors are handled by ensureConnection()
         }
       }
       explorerProvider.refresh();
