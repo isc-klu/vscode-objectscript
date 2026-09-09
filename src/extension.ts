@@ -374,7 +374,7 @@ export function getResolvedConnectionSpec(
 export const inactiveServerIds: Set<string> = new Set();
 
 /** `configName`s for which an `ensureConnection` call is currently in progress */
-const connectionsBeingChecked: Set<string> = new Set();
+const checkingConnection: Set<string> = new Set();
 
 /**
  * Verify `uri`'s connection works, repairing it if not (may show a modal credential prompt).
@@ -392,7 +392,7 @@ export async function ensureConnection(
 ): Promise<void> {
   const { apiTarget, configName } = connectionTarget(uri);
   // Do nothing if already checking this connection
-  if (connectionsBeingChecked.has(configName)) {
+  if (checkingConnection.has(configName)) {
     return;
   }
 
@@ -483,7 +483,7 @@ export async function ensureConnection(
     if (!api.externalServer) await setConnectionState(configName, false);
     return;
   }
-  connectionsBeingChecked.add(configName);
+  checkingConnection.add(configName);
 
   const username = auth.username || "UnknownUser";
   const identity = username.startsWith("*") ? `using ${username.slice(1, -1)}` : `as user \`${username}\``;
@@ -603,7 +603,7 @@ export async function ensureConnection(
       if (!api.externalServer) await setConnectionState(configName, false);
     })
     .finally(() => {
-      connectionsBeingChecked.delete(configName);
+      checkingConnection.delete(configName);
       if (triggerRefreshes) {
         setTimeout(() => {
           explorerProvider.refresh();
