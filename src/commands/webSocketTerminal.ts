@@ -192,6 +192,11 @@ class WebSocketTerminal implements vscode.Pseudoterminal {
     this._hideCursorWrite(`${rowStr}${colStr}`);
   }
 
+  /** Set the margin (length of the un-deletable prompt prefix) and position the cursor right after it */
+  private _setMargin(col: number): void {
+    this._margin = this._cursorCol = col;
+  }
+
   /**
    * Move the cursor to the last line of the input (prompt or read)
    * so any output doesn't overwrite the end of the input
@@ -270,7 +275,7 @@ class WebSocketTerminal implements vscode.Pseudoterminal {
                 this._promptExitCode = ";1";
               }
             }
-            this._margin = this._cursorCol = message.text!.split("\r\n").pop()!.length;
+            this._setMargin(message.text!.split("\r\n").pop()!.length);
             this._hideCursorWrite(message.text!);
             break;
           case "prompt":
@@ -280,7 +285,7 @@ class WebSocketTerminal implements vscode.Pseudoterminal {
               this._hideCursorWrite(
                 `\x1b]633;D${this._promptExitCode}\x07\r\n\x1b]633;A\x07${message.text}\x1b]633;B\x07`
               );
-              this._margin = this._cursorCol = message.text!.replace(this._colorsRegex, "").length;
+              this._setMargin(message.text!.replace(this._colorsRegex, "").length);
               this._prompt = message.text!;
               this._promptExitCode = ";0";
               // Store the current namespace
@@ -330,385 +335,396 @@ class WebSocketTerminal implements vscode.Pseudoterminal {
     }
   }
 
-  async handleInput(char: string): Promise<void> {
+  handleInput(char: string): void {
+    if (char == keys.interrupt) {
+      // Interrupt is handled regardless of state
+      return this._handleInterrupt();
+    }
+    if (this._state == "eval") {
+      // Terminal is already evaluating user input; ignore everything else
+      return;
+    }
     switch (char) {
-      case keys.enter: {
-        if (this._state == "eval") {
-          // Terminal is already evaluating user input
-          return;
-        }
-
-        if (this._state == "prompt") {
-          // Reset historyIdx
-          this._historyIdx = -1;
-
-          if (this._input != "" && !this._input.includes("\r\n")) {
-            // Remove the input from the existing history
-            this._history = this._history.filter((h) => h != this._input);
-
-            // Append this input to the history
-            this._history.push(this._input);
-          }
-
-          // Check if we should enter multi-line mode
-          if (this._inputIsUnterminated()) {
-            // Write the multi-line mode prompt to the terminal
-            this._hideCursorWrite(`\r\n${this.multiLinePrompt}`);
-            this._margin = this._cursorCol = this.multiLinePrompt.length;
-            this._input += "\r\n";
-            return;
-          }
-
-          // Reset first line tracker
-          this._firstOutputLineSincePrompt = true;
-        } else {
-          // Reset first line tracker
-          this._firstOutputLineSincePrompt = false;
-        }
-        // Move cursor to the last line of the input
-        this._moveCursorToLastLine();
-
-        // Send the input to the server for processing
-        this._socket.send(JSON.stringify({ type: this._state, input: this._input }));
-        if (this._state == "prompt") {
-          this._hideCursorWrite(`\x1b]633;E;${this._inputEscaped()};${this._nonce}\x07\r\n\x1b]633;C\x07`);
-          if (this._input == "") {
-            this._promptExitCode = "";
-          }
-        }
-        this._input = "";
-        this._state = "eval";
-        this._margin = this._cursorCol = 0;
-        return;
-      }
+      case keys.enter:
+        return this._state == "prompt" ? this._handleEnterPrompt() : this._handleEnterRead();
       case keys.ctrlH:
-      case keys.backspace: {
-        // Erase to the left
-        if (this._state == "eval") {
-          // We're not accepting user input
-          return;
-        }
-        if (this._cursorCol <= this._margin) {
-          // Don't delete the prompt
-          return;
-        }
-        const inputArr = this._input.split("\r\n");
-        const trailingText = inputArr[inputArr.length - 1].slice(this._cursorCol - this._margin);
-        inputArr[inputArr.length - 1] =
-          inputArr[inputArr.length - 1].slice(0, this._cursorCol - this._margin - 1) + trailingText;
-        this._input = inputArr.join("\r\n");
-        this._moveCursor(-1);
-        this._hideCursorWrite(`\x1b7\x1b[0J${trailingText}\x1b8`);
-        if (this._input != "" && this._state == "prompt") {
-          // Syntax color input
-          this._socket.send(JSON.stringify({ type: "color", input: this._input }));
-        }
-        return;
-      }
-      case keys.del: {
-        // Erase to the right
-        if (this._state == "eval") {
-          // We're not accepting user input
-          return;
-        }
-        const inputArr = this._input.split("\r\n");
-        if (this._margin + inputArr[inputArr.length - 1].length - this._cursorCol > 0) {
-          const trailingText = inputArr[inputArr.length - 1].slice(this._cursorCol - this._margin + 1);
-          inputArr[inputArr.length - 1] =
-            inputArr[inputArr.length - 1].slice(0, this._cursorCol - this._margin) + trailingText;
-          this._input = inputArr.join("\r\n");
-          this._hideCursorWrite(`\x1b7\x1b[0J${trailingText}\x1b8`);
-          if (this._input != "" && this._state == "prompt") {
-            // Syntax color input
-            this._socket.send(JSON.stringify({ type: "color", input: this._input }));
-          }
-        }
-        return;
-      }
-      case keys.up: {
-        if (this._state != "prompt" || this._input.includes("\r\n")) {
-          // History only available for prompts
-          return;
-        }
-        if (this._historyIdx == -1) {
-          // Show the most recent input
-          this._historyIdx = this._history.length - 1;
-        } else if (this._historyIdx == 0) {
-          // This is the end of our history
-          this._historyIdx = -2;
-        } else if (this._historyIdx == -2) {
-          // We hit the end of our history
-          return;
-        } else {
-          // Scroll back one more input
-          this._historyIdx--;
-        }
-        if (this._historyIdx >= 0) {
-          this._input = this._history[this._historyIdx];
-        } else if (this._historyIdx == -1) {
-          // There is no history, so do nothing
-          return;
-        } else {
-          // If we hit the end, leave the input blank
-          this._input = "";
-        }
-        // Move cursor to start of input, clear everything, then write new input
-        this._moveCursor(this._margin - this._cursorCol);
-        this._hideCursorWrite(`\x1b[0J${this._input}`);
-        this._cursorCol = this._margin + this._input.length;
-        if (this._input != "") {
-          // Syntax color input
-          this._socket.send(JSON.stringify({ type: "color", input: this._input }));
-        }
-        return;
-      }
-      case keys.down: {
-        if (this._state != "prompt" || this._input.includes("\r\n")) {
-          // History only available for prompts
-          return;
-        }
-        if (this._historyIdx == -1) {
-          // We're not in the history
-          return;
-        } else if (this._historyIdx == -2) {
-          // We hit the end of our history
-          this._historyIdx = 0;
-        } else if (this._historyIdx == this._history.length - 1) {
-          // We hit the beginning of our history
-          this._historyIdx = -1;
-        } else {
-          this._historyIdx++;
-        }
-        if (this._historyIdx != -1) {
-          this._input = this._history[this._historyIdx];
-        } else {
-          // If we hit the beginning, leave the input blank
-          this._input = "";
-        }
-        // Move cursor to start of input, clear everything, then write new input
-        this._moveCursor(this._margin - this._cursorCol);
-        this._hideCursorWrite(`\x1b[0J${this._input}`);
-        this._cursorCol = this._margin + this._input.length;
-        if (this._input != "") {
-          // Syntax color input
-          this._socket.send(JSON.stringify({ type: "color", input: this._input }));
-        }
-        return;
-      }
-      case keys.left: {
-        if (this._state == "eval") {
-          // User can't move cursor
-          return;
-        }
-        if (this._cursorCol > this._margin) {
-          if (this._cursorCol % this._cols == 0) {
-            // Move the cursor to the end of the previous line
-            this._hideCursorWrite(`${actions.cursorUp}\x1b[${this._cols}G`);
-          } else {
-            // Move the cursor back one column
-            this._hideCursorWrite(actions.cursorBack);
-          }
-          this._cursorCol--;
-        }
-        return;
-      }
-      case keys.right: {
-        if (this._state == "eval") {
-          // User can't move cursor
-          return;
-        }
-        if (this._cursorCol < this._margin + this._input.split("\r\n").pop()!.length) {
-          this._cursorCol++;
-          if (this._cursorCol % this._cols == 0) {
-            // Move the cursor to the beginning of the next line
-            this._hideCursorWrite("\x1b[1E");
-          } else {
-            // Move the cursor forward one column
-            this._hideCursorWrite(actions.cursorForward);
-          }
-        }
-        return;
-      }
-      case keys.interrupt: {
-        // Send interrupt message
-        this._socket.send(JSON.stringify({ type: "interrupt" }));
-        this._input = "";
-        if (this._state == "prompt") {
-          this._hideCursorWrite("\r\n");
-          // Reset first line tracker
-          this._firstOutputLineSincePrompt = true;
-        }
-        this._state = "eval";
-        return;
-      }
+      case keys.backspace:
+        return this._handleBackspace();
+      case keys.del:
+        return this._handleDel();
+      case keys.up:
+        return this._handleUp();
+      case keys.down:
+        return this._handleDown();
+      case keys.left:
+        return this._handleLeft();
+      case keys.right:
+        return this._handleRight();
       case keys.home:
-      case keys.ctrlA: {
-        if (this._state == "prompt" && this._cursorCol - this._margin > 0) {
-          // Move the cursor to the beginning of the input
-          this._moveCursor(this._margin - this._cursorCol);
-        }
-        return;
-      }
+      case keys.ctrlA:
+        return this._handleHome();
       case keys.end:
-      case keys.ctrlE: {
-        if (this._state == "prompt") {
-          // Move the cursor to the end of the input
-          const lineLength = this._input.split("\r\n").pop()!.length;
-          if (lineLength > this._cursorCol) {
-            this._moveCursor(lineLength - this._cursorCol);
-          }
-        }
-        return;
+      case keys.ctrlE:
+        return this._handleEnd();
+      case keys.ctrlU:
+        return this._handleCtrlU();
+      default:
+        return this._handleDefault(char);
+    }
+  }
+
+  private _handleEnterPrompt(): void {
+    this._recordHistory();
+
+    // Check if we should enter multi-line mode
+    if (this._inputIsUnterminated()) {
+      // Write the multi-line mode prompt to the terminal
+      this._hideCursorWrite(`\r\n${this.multiLinePrompt}`);
+      this._setMargin(this.multiLinePrompt.length);
+      this._input += "\r\n";
+      return;
+    }
+
+    // Reset first line tracker
+    this._firstOutputLineSincePrompt = true;
+    this._submitInput();
+  }
+
+  private _handleEnterRead(): void {
+    this._submit();
+  }
+
+  /** Remove any existing entry for `_input` from history, then append it, resetting the scroll position */
+  private _recordHistory(): void {
+    // Reset historyIdx
+    this._historyIdx = -1;
+
+    if (this._input != "" && !this._input.includes("\r\n")) {
+      // Remove the input from the existing history
+      this._history = this._history.filter((h) => h != this._input);
+
+      // Append this input to the history
+      this._history.push(this._input);
+    }
+  }
+
+  /** Record `_input` in history (if a prompt) and submit it to the server */
+  private _submit(): void {
+    if (this._state == "prompt") {
+      this._recordHistory();
+      // Reset first line tracker
+      this._firstOutputLineSincePrompt = true;
+    } else {
+      // Reset first line tracker
+      this._firstOutputLineSincePrompt = false;
+    }
+    this._submitInput();
+  }
+
+  /** Send `_input` to the server for evaluation and reset state so the terminal is ready for the next prompt/read */
+  private _submitInput(): void {
+    // Move cursor to the last line of the input
+    this._moveCursorToLastLine();
+
+    // Send the input to the server for processing
+    this._socket.send(JSON.stringify({ type: this._state, input: this._input }));
+    if (this._state == "prompt") {
+      this._hideCursorWrite(`\x1b]633;E;${this._inputEscaped()};${this._nonce}\x07\r\n\x1b]633;C\x07`);
+      if (this._input == "") {
+        this._promptExitCode = "";
       }
-      case keys.ctrlU: {
-        if (this._state == "prompt") {
-          // Erase the input if the cursor is at the end of it
-          const inputArr = this._input.split("\r\n");
-          if (this._cursorCol == this._margin + inputArr[inputArr.length - 1].length) {
-            // Move the cursor to the beginning of the input
-            this._moveCursor(this._margin - this._cursorCol);
-            // Erase everything to the right of the cursor
-            this._hideCursorWrite("\x1b[0J");
-            inputArr[inputArr.length - 1] = "";
-            this._input = inputArr.join("\r\n");
-            if (this._input != "") {
-              // Syntax color input
-              this._socket.send(JSON.stringify({ type: "color", input: this._input }));
-            }
-          }
-        }
-        return;
+    }
+    this._input = "";
+    this._state = "eval";
+    this._setMargin(0);
+  }
+
+  private _handleBackspace(): void {
+    // Erase to the left
+    if (this._cursorCol <= this._margin) {
+      // Don't delete the prompt
+      return;
+    }
+    const inputArr = this._input.split("\r\n");
+    const trailingText = inputArr[inputArr.length - 1].slice(this._cursorCol - this._margin);
+    inputArr[inputArr.length - 1] =
+      inputArr[inputArr.length - 1].slice(0, this._cursorCol - this._margin - 1) + trailingText;
+    this._input = inputArr.join("\r\n");
+    this._moveCursor(-1);
+    this._hideCursorWrite(`\x1b7\x1b[0J${trailingText}\x1b8`);
+    if (this._input != "" && this._state == "prompt") {
+      // Syntax color input
+      this._socket.send(JSON.stringify({ type: "color", input: this._input }));
+    }
+  }
+
+  private _handleDel(): void {
+    // Erase to the right
+    const inputArr = this._input.split("\r\n");
+    if (this._margin + inputArr[inputArr.length - 1].length - this._cursorCol > 0) {
+      const trailingText = inputArr[inputArr.length - 1].slice(this._cursorCol - this._margin + 1);
+      inputArr[inputArr.length - 1] =
+        inputArr[inputArr.length - 1].slice(0, this._cursorCol - this._margin) + trailingText;
+      this._input = inputArr.join("\r\n");
+      this._hideCursorWrite(`\x1b7\x1b[0J${trailingText}\x1b8`);
+      if (this._input != "" && this._state == "prompt") {
+        // Syntax color input
+        this._socket.send(JSON.stringify({ type: "color", input: this._input }));
       }
-      default: {
-        if (this._state == "eval") {
-          // Terminal is already evaluating user input
-          return;
-        }
-        // Turn all newlines and tabs into spaces
-        char = char.replace(/\r?\n/g, " ");
-        if (this._state == "prompt") {
-          char = char.replace(/\t/g, " ");
-        }
-        let submit = false;
-        if (char.endsWith("\r")) {
-          // Submit the input after processing
-          // This should only happen due to VS Code's shell integration
-          submit = true;
-          // Need to remove any multi-line prompts that are in the command lines
-          // Workaround for https://github.com/microsoft/vscode/issues/258457
-          char = char
-            .slice(0, -1)
-            .split("\r")
-            .map((l) => (l.startsWith(this.multiLinePrompt) ? l.slice(this.multiLinePrompt.length) : l))
-            .join("\r");
-        }
-        // Replace all single \r with \r\n
-        char = char.replace(/\r(?!\n)/g, "\r\n");
-        const inputArr = this._input.split("\r\n");
-        let eraseAfterCursor = "",
-          trailingText = "";
-        if (this._cursorCol < this._margin + inputArr[inputArr.length - 1].length) {
-          // Insert the new char(s)
-          trailingText = inputArr[inputArr.length - 1].slice(this._cursorCol - this._margin);
-          inputArr[inputArr.length - 1] = `${inputArr[inputArr.length - 1].slice(
-            0,
-            this._cursorCol - this._margin
-          )}${char}${trailingText}`;
-          this._input = inputArr.join("\r\n");
-          eraseAfterCursor = "\x1b[0J";
-        } else {
-          // Append the new char(s)
-          this._input += char;
-        }
-        const currCol = this._cursorCol % this._cols;
-        const currRow = (this._cursorCol - currCol) / this._cols;
-        const originalCol = this._cursorCol;
-        let newRow: number;
-        if (char.includes("\r\n")) {
-          if (this._state == "prompt") {
-            char = char.replaceAll("\r\n", `\r\n${this.multiLinePrompt}`);
-            this._margin = this.multiLinePrompt.length;
-          }
-          const charLines = char.split("\r\n");
-          newRow =
-            charLines.reduce(
-              (sum, line, i) => sum + Math.ceil(((i == 0 ? this._cursorCol : 0) + line.length + 1) / this._cols),
-              0
-            ) - 1;
-          this._cursorCol = charLines[charLines.length - 1].length;
-        } else {
-          newRow = Math.ceil((this._cursorCol + char.length + 1) / this._cols) - 1;
-          this._cursorCol += char.length;
-        }
-        const rowDelta = newRow - currRow;
-        const colDelta = (this._cursorCol % this._cols) - currCol;
-        const rowStr = rowDelta ? (rowDelta > 0 ? `\x1b[${rowDelta}B` : `\x1b[${Math.abs(rowDelta)}A`) : "";
-        const colStr = colDelta ? (colDelta > 0 ? `\x1b[${colDelta}C` : `\x1b[${Math.abs(colDelta)}D`) : "";
-        char += trailingText;
-        const spaceOnCurrentLine = this._cols - (originalCol % this._cols);
-        if (this._state == "read" && (char.includes("\r\n") || char.length >= spaceOnCurrentLine)) {
-          // There's no auto-line wrapping when in read mode, so we must move the cursor manually
-          const charLines = char.split("\r\n");
-          // Extract all the characters that fit on the cursor's line
-          const firstLine = charLines[0].slice(0, spaceOnCurrentLine);
-          charLines[0] = charLines[0].slice(spaceOnCurrentLine);
-          // Split the rest into an array of lines that fit in the viewport
-          const lines = charLines.flatMap((line, idx) => {
-            if (idx == charLines.length - 1 && line == "") {
-              // Add a blank "line" to move the cursor to the next viewport row
-              return [""];
-            }
-            const chunks: string[] = [];
-            for (let i = 0; i < line.length; i += this._cols) {
-              chunks.push(line.slice(i, i + this._cols));
-            }
-            return chunks;
-          });
-          // Join the lines with the cursor escape code
-          lines.unshift(firstLine);
-          char = lines.join("\r\n");
-        }
-        // Save the cursor position, write the text, restore the cursor position, then move the cursor manually
-        this._hideCursorWrite(`\x1b7${eraseAfterCursor}${char}\x1b8${rowStr}${colStr}`);
-        if (submit) {
-          if (this._state == "prompt") {
-            // Reset historyIdx
-            this._historyIdx = -1;
+    }
+  }
 
-            if (this._input != "" && !this._input.includes("\r\n")) {
-              // Remove the input from the existing history
-              this._history = this._history.filter((h) => h != this._input);
+  private _handleUp(): void {
+    if (this._state != "prompt" || this._input.includes("\r\n")) {
+      // History only available for prompts
+      return;
+    }
+    if (this._historyIdx == -1) {
+      // Show the most recent input
+      this._historyIdx = this._history.length - 1;
+    } else if (this._historyIdx == 0) {
+      // This is the end of our history
+      this._historyIdx = -2;
+    } else if (this._historyIdx == -2) {
+      // We hit the end of our history
+      return;
+    } else {
+      // Scroll back one more input
+      this._historyIdx--;
+    }
+    if (this._historyIdx >= 0) {
+      this._replaceInput(this._history[this._historyIdx]);
+    } else if (this._historyIdx == -1) {
+      // There is no history, so do nothing
+      return;
+    } else {
+      // If we hit the end, leave the input blank
+      this._replaceInput("");
+    }
+  }
 
-              // Append this input to the history
-              this._history.push(this._input);
-            }
+  private _handleDown(): void {
+    if (this._state != "prompt" || this._input.includes("\r\n")) {
+      // History only available for prompts
+      return;
+    }
+    if (this._historyIdx == -1) {
+      // We're not in the history
+      return;
+    } else if (this._historyIdx == -2) {
+      // We hit the end of our history
+      this._historyIdx = 0;
+    } else if (this._historyIdx == this._history.length - 1) {
+      // We hit the beginning of our history
+      this._historyIdx = -1;
+    } else {
+      this._historyIdx++;
+    }
+    if (this._historyIdx != -1) {
+      this._replaceInput(this._history[this._historyIdx]);
+    } else {
+      // If we hit the beginning, leave the input blank
+      this._replaceInput("");
+    }
+  }
 
-            // Reset first line tracker
-            this._firstOutputLineSincePrompt = true;
-          } else {
-            // Reset first line tracker
-            this._firstOutputLineSincePrompt = false;
-          }
-          // Move cursor to the last line of the input
-          this._moveCursorToLastLine();
+  /** Replace `_input` with `newInput`, redraw it from the margin, and reposition the cursor at its end */
+  private _replaceInput(newInput: string): void {
+    this._input = newInput;
+    // Move cursor to start of input, clear everything, then write new input
+    this._moveCursor(this._margin - this._cursorCol);
+    this._hideCursorWrite(`\x1b[0J${this._input}`);
+    this._cursorCol = this._margin + this._input.length;
+    if (this._input != "") {
+      // Syntax color input
+      this._socket.send(JSON.stringify({ type: "color", input: this._input }));
+    }
+  }
 
-          // Send the input to the server for processing
-          this._socket.send(JSON.stringify({ type: this._state, input: this._input }));
-          if (this._state == "prompt") {
-            this._hideCursorWrite(`\x1b]633;E;${this._inputEscaped()};${this._nonce}\x07\r\n\x1b]633;C\x07`);
-            if (this._input == "") {
-              this._promptExitCode = "";
-            }
-          }
-          this._input = "";
-          this._state = "eval";
-          this._margin = this._cursorCol = 0;
-        } else if (this._input != "" && this._state == "prompt") {
+  private _handleLeft(): void {
+    if (this._cursorCol > this._margin) {
+      if (this._cursorCol % this._cols == 0) {
+        // Move the cursor to the end of the previous line
+        this._hideCursorWrite(`${actions.cursorUp}\x1b[${this._cols}G`);
+      } else {
+        // Move the cursor back one column
+        this._hideCursorWrite(actions.cursorBack);
+      }
+      this._cursorCol--;
+    }
+  }
+
+  private _handleRight(): void {
+    if (this._cursorCol < this._margin + this._input.split("\r\n").pop()!.length) {
+      this._cursorCol++;
+      if (this._cursorCol % this._cols == 0) {
+        // Move the cursor to the beginning of the next line
+        this._hideCursorWrite("\x1b[1E");
+      } else {
+        // Move the cursor forward one column
+        this._hideCursorWrite(actions.cursorForward);
+      }
+    }
+  }
+
+  private _handleInterrupt(): void {
+    // Send interrupt message
+    this._socket.send(JSON.stringify({ type: "interrupt" }));
+    this._input = "";
+    if (this._state == "prompt") {
+      this._hideCursorWrite("\r\n");
+      // Reset first line tracker
+      this._firstOutputLineSincePrompt = true;
+    }
+    this._state = "eval";
+  }
+
+  private _handleHome(): void {
+    if (this._state == "prompt" && this._cursorCol - this._margin > 0) {
+      // Move the cursor to the beginning of the input
+      this._moveCursor(this._margin - this._cursorCol);
+    }
+  }
+
+  private _handleEnd(): void {
+    if (this._state == "prompt") {
+      // Move the cursor to the end of the input
+      const lineLength = this._input.split("\r\n").pop()!.length;
+      if (lineLength > this._cursorCol) {
+        this._moveCursor(lineLength - this._cursorCol);
+      }
+    }
+  }
+
+  private _handleCtrlU(): void {
+    if (this._state == "prompt") {
+      // Erase the input if the cursor is at the end of it
+      const inputArr = this._input.split("\r\n");
+      if (this._cursorCol == this._margin + inputArr[inputArr.length - 1].length) {
+        // Move the cursor to the beginning of the input
+        this._moveCursor(this._margin - this._cursorCol);
+        // Erase everything to the right of the cursor
+        this._hideCursorWrite("\x1b[0J");
+        inputArr[inputArr.length - 1] = "";
+        this._input = inputArr.join("\r\n");
+        if (this._input != "") {
           // Syntax color input
           this._socket.send(JSON.stringify({ type: "color", input: this._input }));
         }
       }
     }
+  }
+
+  private _handleDefault(char: string): void {
+    const { text, submit } = this._normalizeDefaultInput(char);
+    this._hideCursorWrite(this._insertText(text));
+    if (submit) {
+      this._submit();
+    } else if (this._input != "" && this._state == "prompt") {
+      // Syntax color input
+      this._socket.send(JSON.stringify({ type: "color", input: this._input }));
+    }
+  }
+
+  /** Clean up typed/pasted text before it's inserted, and detect whether it should submit the input */
+  private _normalizeDefaultInput(char: string): { text: string; submit: boolean } {
+    // Turn all newlines and tabs into spaces
+    char = char.replace(/\r?\n/g, " ");
+    if (this._state == "prompt") {
+      char = char.replace(/\t/g, " ");
+    }
+    let submit = false;
+    if (char.endsWith("\r")) {
+      // Submit the input after processing
+      // This should only happen due to VS Code's shell integration
+      submit = true;
+      // Need to remove any multi-line prompts that are in the command lines
+      // Workaround for https://github.com/microsoft/vscode/issues/258457
+      char = char
+        .slice(0, -1)
+        .split("\r")
+        .map((l) => (l.startsWith(this.multiLinePrompt) ? l.slice(this.multiLinePrompt.length) : l))
+        .join("\r");
+    }
+    // Replace all single \r with \r\n
+    return { text: char.replace(/\r(?!\n)/g, "\r\n"), submit };
+  }
+
+  /** Insert `text` into `_input` at the cursor, update cursor/margin tracking, and return the escape sequence that renders it */
+  private _insertText(text: string): string {
+    const inputArr = this._input.split("\r\n");
+    let eraseAfterCursor = "",
+      trailingText = "";
+    if (this._cursorCol < this._margin + inputArr[inputArr.length - 1].length) {
+      // Insert the new char(s)
+      trailingText = inputArr[inputArr.length - 1].slice(this._cursorCol - this._margin);
+      inputArr[inputArr.length - 1] = `${inputArr[inputArr.length - 1].slice(
+        0,
+        this._cursorCol - this._margin
+      )}${text}${trailingText}`;
+      this._input = inputArr.join("\r\n");
+      eraseAfterCursor = "\x1b[0J";
+    } else {
+      // Append the new char(s)
+      this._input += text;
+    }
+    const currCol = this._cursorCol % this._cols;
+    const currRow = (this._cursorCol - currCol) / this._cols;
+    const originalCol = this._cursorCol;
+    let newRow: number;
+    if (text.includes("\r\n")) {
+      if (this._state == "prompt") {
+        text = text.replaceAll("\r\n", `\r\n${this.multiLinePrompt}`);
+        this._margin = this.multiLinePrompt.length;
+      }
+      const textLines = text.split("\r\n");
+      newRow =
+        textLines.reduce(
+          (sum, line, i) => sum + Math.ceil(((i == 0 ? this._cursorCol : 0) + line.length + 1) / this._cols),
+          0
+        ) - 1;
+      this._cursorCol = textLines[textLines.length - 1].length;
+    } else {
+      newRow = Math.ceil((this._cursorCol + text.length + 1) / this._cols) - 1;
+      this._cursorCol += text.length;
+    }
+    const rowDelta = newRow - currRow;
+    const colDelta = (this._cursorCol % this._cols) - currCol;
+    const rowStr = rowDelta ? (rowDelta > 0 ? `\x1b[${rowDelta}B` : `\x1b[${Math.abs(rowDelta)}A`) : "";
+    const colStr = colDelta ? (colDelta > 0 ? `\x1b[${colDelta}C` : `\x1b[${Math.abs(colDelta)}D`) : "";
+    text += trailingText;
+    if (this._state == "read") {
+      text = this._wrapForReadMode(text, originalCol);
+    }
+    // Save the cursor position, write the text, restore the cursor position, then move the cursor manually
+    return `\x1b7${eraseAfterCursor}${text}\x1b8${rowStr}${colStr}`;
+  }
+
+  /** In read mode there's no auto-line wrapping, so manually wrap `text` if it would overflow the cursor's line */
+  private _wrapForReadMode(text: string, originalCol: number): string {
+    const spaceOnCurrentLine = this._cols - (originalCol % this._cols);
+    if (!text.includes("\r\n") && text.length < spaceOnCurrentLine) {
+      return text;
+    }
+    const textLines = text.split("\r\n");
+    // Extract all the characters that fit on the cursor's line
+    const firstLine = textLines[0].slice(0, spaceOnCurrentLine);
+    textLines[0] = textLines[0].slice(spaceOnCurrentLine);
+    // Split the rest into an array of lines that fit in the viewport
+    const lines = textLines.flatMap((line, idx) => {
+      if (idx == textLines.length - 1 && line == "") {
+        // Add a blank "line" to move the cursor to the next viewport row
+        return [""];
+      }
+      const chunks: string[] = [];
+      for (let i = 0; i < line.length; i += this._cols) {
+        chunks.push(line.slice(i, i + this._cols));
+      }
+      return chunks;
+    });
+    // Join the lines with the cursor escape code
+    lines.unshift(firstLine);
+    return lines.join("\r\n");
   }
 
   setDimensions(dimensions: vscode.TerminalDimensions): void {
