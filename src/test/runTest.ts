@@ -15,23 +15,19 @@ async function main() {
     // Passed to --extensionTestsPath
     const extensionTestsPath = path.resolve(__dirname, "./suite/index");
 
-    // The path to the workspace file
-    const workspace = path.resolve("test-fixtures", "test.code-workspace");
+    // The multi-root workspace whose folders connect to the IRIS container started from test-fixtures/iris
+    const workspace = path.resolve(extensionDevelopmentPath, "test-fixtures", "ci.code-workspace");
 
     const vscodeExecutablePath = await downloadAndUnzipVSCode("stable");
     const [cli, ...args] = resolveCliArgsFromVSCodeExecutablePath(vscodeExecutablePath);
 
-    const installExtension = (extId) =>
-      cp.spawnSync(cli, [...args, "--install-extension", extId], {
-        encoding: "utf-8",
-        stdio: "inherit",
-      });
+    // Server Manager resolves the intersystems.servers entries used by the fixture workspace
+    cp.spawnSync(cli, [...args, "--install-extension", "intersystems-community.servermanager"], {
+      encoding: "utf-8",
+      stdio: "inherit",
+    });
 
-    // Install dependent extensions
-    installExtension("intersystems-community.servermanager");
-    installExtension("intersystems.language-server");
-
-    // A fresh user-data-dir so state cached by a previous run can't affect this one
+    // A fresh user-data-dir so cached connection state from a previous run can't mask activation bugs
     const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "vscode-objectscript-test-"));
 
     const launchArgs = [
@@ -46,8 +42,17 @@ async function main() {
     // Inherited from a VS Code extension host (e.g. a terminal spawned by an extension); would make
     // the downloaded VS Code run as plain Node and try to execute the workspace file as a script
     delete process.env.ELECTRON_RUN_AS_NODE;
-    // Download VS Code, unzip it and run the integration test
-    await runTests({ extensionDevelopmentPath, extensionTestsPath, launchArgs });
+    try {
+      await runTests({ extensionDevelopmentPath, extensionTestsPath, launchArgs });
+    } catch (err) {
+      // The extension's own output channel is the best record of what it sent to the server
+      for (const log of fs.readdirSync(userDataDir, { recursive: true }) as string[]) {
+        if (log.endsWith("ObjectScript.log")) {
+          console.error(`\n===== ${log} =====\n${fs.readFileSync(path.join(userDataDir, log), "utf-8")}`);
+        }
+      }
+      throw err;
+    }
   } catch (err) {
     console.error("Failed to run tests", err);
     process.exit(1);

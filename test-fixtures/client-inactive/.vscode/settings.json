@@ -1,0 +1,7 @@
+{
+  "objectscript.conn": {
+    "active": false,
+    "server": "blackhole",
+    "ns": "USER"
+  }
+}
