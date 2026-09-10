@@ -459,7 +459,7 @@ export function notNull(el: any): boolean {
   return el !== null;
 }
 
-/** Determine the compose command to use (`docker-compose` or `docker compose`).  */
+/** Determine the compose command to use (`docker-compose`, `docker compose`, `podman compose`, or `podman-compose`).  */
 async function composeCommand(cwd?: string): Promise<string> {
   return new Promise<string>((resolve) => {
     let cmd = "docker compose";
@@ -468,9 +468,87 @@ async function composeCommand(cwd?: string): Promise<string> {
         // 'docker compose' is not present, so default to 'docker-compose'
         cmd = "docker-compose";
       }
-      resolve(cmd);
+      exec(`${cmd} version`, { cwd }, (error) => {
+        if (error) {
+          // Neither Docker Compose variant is present; try Podman Compose. 'podman compose' can locate a
+          // provider that a plain PATH lookup for 'podman-compose' wouldn't, so try it first.
+          cmd = "podman compose";
+        }
+        exec(`${cmd} version`, { cwd }, (error) => {
+          if (error) {
+            cmd = "podman-compose";
+          }
+          resolve(cmd);
+        });
+      });
     });
   });
+}
+
+/**
+ * Podman's compose tooling doesn't support the same `ps --services --filter status=running` and
+ * `port` output format as Docker Compose (bare port number instead of a host:port pair, and no
+ * `--services`/`--filter` flags), so it needs its own port/running-state resolution.
+ */
+async function portFromPodmanCompose(
+  cmd: string,
+  cwd: string,
+  file: string,
+  service: string,
+  internalPort: number,
+  internalSuperserverPort: number,
+  dockerCompose: { internalSuperserverPort?: number },
+  result: { port: number | null; superserverPort: number | null; docker: boolean; service?: string }
+): Promise<typeof result> {
+  const ps = await run("ps --format json");
+  let containers: { State?: string; Labels?: Record<string, string> }[] = [];
+  try {
+    containers = JSON.parse(ps);
+  } catch {
+    // Leave containers empty; treated as not running below
+  }
+  if (!containers.some((c) => c.State === "running" && c.Labels?.["com.docker.compose.service"] === service)) {
+    throw `Service '${service}' not found in '${path.join(cwd, file)}', or not running.`;
+  }
+  const port = parsePort(await run(`port --protocol=tcp ${service} ${internalPort}`));
+  if (!port) {
+    throw `Webserver port ${internalPort} not published for service '${service}' in '${path.join(cwd, file)}'.`;
+  }
+  result.port = parseInt(port, 10);
+  let superserverPort: string | undefined;
+  try {
+    superserverPort = parsePort(await run(`port --protocol=tcp ${service} ${internalSuperserverPort}`));
+  } catch (error) {
+    // Not an error if we were merely looking for the default port and the container doesn't publish it
+    if (!dockerCompose.internalSuperserverPort) return result;
+    throw error;
+  }
+  if (!superserverPort) {
+    throw `Superserver port ${internalSuperserverPort} not published for service '${service}' in '${path.join(cwd, file)}'.`;
+  }
+  result.superserverPort = parseInt(superserverPort, 10);
+  return result;
+
+  // Runs a compose subcommand and returns its stdout, rejecting with a plain string on failure.
+  function run(args: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      exec(`${cmd} ${args}`, { cwd }, (error, stdout) => {
+        if (error) {
+          reject(error.message);
+          return;
+        }
+        resolve(stdout);
+      });
+    });
+  }
+
+  function parsePort(stdout: string) {
+    return stdout
+      .trim()
+      .split("\n")
+      .pop()
+      ?.match(/(\d+)$/)?.[1];
+  }
 }
 
 export async function portFromDockerCompose(
@@ -529,6 +607,10 @@ export async function portFromDockerCompose(
   const envFileParam = envFile ? `--env-file ${envFile}` : "";
   const cmd = `${await composeCommand(cwd)} -f ${file} ${envFileParam} `;
 
+  if (cmd.startsWith("podman compose ") || cmd.startsWith("podman-compose ")) {
+    return portFromPodmanCompose(cmd, cwd, file, service, internalPort, internalSuperserverPort, dockerCompose, result);
+  }
+
   return new Promise((resolve, reject) => {
     exec(`${cmd} ps --services --filter status=running`, { cwd }, (error, stdout) => {
       if (error) {
@@ -580,7 +662,7 @@ export async function terminalWithDocker(): Promise<vscode.Terminal> {
   if (!terminal) {
     let exe = await composeCommand();
     const argsArr: string[] = [];
-    if (exe == "docker compose") {
+    if (exe.includes(" ")) {
       const exeSplit = exe.split(" ");
       exe = exeSplit[0];
       argsArr.push(exeSplit[1]);
@@ -615,7 +697,7 @@ export async function shellWithDocker(): Promise<vscode.Terminal> {
   if (!terminal) {
     let exe = await composeCommand();
     const argsArr: string[] = [];
-    if (exe == "docker compose") {
+    if (exe.includes(" ")) {
       const exeSplit = exe.split(" ");
       exe = exeSplit[0];
       argsArr.push(exeSplit[1]);
