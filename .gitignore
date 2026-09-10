@@ -6,5 +6,8 @@ out/
 dist/
 *.vsix
 vscode*.d.ts
-test-fixtures
 .DS_Store
+
+# Files created by the integration tests
+test-fixtures/*/src/*
+!test-fixtures/*/src/.gitkeep
