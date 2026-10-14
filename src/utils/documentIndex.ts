@@ -67,14 +67,14 @@ async function getCurrentFile(
     );
   } catch (error) {
     // Either a vscode.FileSystemError from readFile()
-    // or a TypeError from decode(). Don't log TypeError
-    // since the file may be a non-text file that has
-    // an extension that we interpret as text (like cls or mac).
+    // or a TypeError from decode().
     // Don't log "FileNotFound" errors, which are probably
     // caused by concurrency issues, or "FileIsADirectory"
     // issues, since we don't care about directories.
     if (error instanceof vscode.FileSystemError && !["FileNotFound", "FileIsADirectory"].includes(error.code)) {
       outputChannel.appendLine(`Failed to read contents of '${displayableUri(uri)}': ${error.toString()}`);
+    } else if (error instanceof TypeError) {
+      outputChannel.appendLine(`Not synced: contents of '${displayableUri(uri)}' are not valid UTF-8`);
     }
   }
 }
@@ -260,6 +260,9 @@ export async function indexWorkspaceFolder(wsFolder: vscode.WorkspaceFolder): Pr
     const sync = api.active && (syncLocalChanges == "all" || (syncLocalChanges == "vscodeOnly" && vscodeChange));
     touchedByVSCode.delete(uriString);
     const change = await updateIndexInternal(uri, documents, uris);
+    if (!sync && vscodeChange && syncLocalChanges != "none" && change.addedOrChanged) {
+      output(change.addedOrChanged.name, "Not synced: server connection is inactive");
+    }
     if (!sync || (!change.addedOrChanged && !change.removed)) return;
     if (change.addedOrChanged) {
       // Create or update the document on the server
@@ -313,8 +316,12 @@ export async function indexWorkspaceFolder(wsFolder: vscode.WorkspaceFolder): Pr
       }
     }
   }
-  watcher.onDidChange((uri) => restRateLimiter.call(() => updateIndexAndSyncChange(uri)));
-  watcher.onDidCreate((uri) => restRateLimiter.call(() => updateIndexAndSyncChange(uri, true)));
+  watcher.onDidChange((uri) =>
+    restRateLimiter.call(() => updateIndexAndSyncChange(uri), `Sync of '${displayableUri(uri)}'`)
+  );
+  watcher.onDidCreate((uri) =>
+    restRateLimiter.call(() => updateIndexAndSyncChange(uri, true), `Sync of '${displayableUri(uri)}'`)
+  );
   watcher.onDidDelete(updateIndexAndSyncDelete);
   wsFolderIndex.set(wsFolder.uri.toString(), { watcher, documents, uris });
 }

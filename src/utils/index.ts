@@ -1178,6 +1178,14 @@ class Semaphore {
     });
   }
 
+  get available(): number {
+    return this._counter;
+  }
+
+  get waiting(): number {
+    return this._tasks.length;
+  }
+
   /** Release a slot in the semaphore */
   release(): void {
     if (this._tasks.length > 0) {
@@ -1193,21 +1201,32 @@ class Semaphore {
 
 export class RateLimiter {
   private _semaphore: Semaphore;
+  private _maxConcurrent: number;
 
   constructor(maxConcurrent: number) {
     // Initialize the semaphore with the maximum number of concurrent tasks
+    this._maxConcurrent = maxConcurrent;
     this._semaphore = new Semaphore(maxConcurrent);
   }
 
-  /** Execute a function with rate limiting */
-  async call<T>(fn: () => Promise<T> | undefined): Promise<T> {
+  /** Execute a function with rate limiting. If `label` is passed, log when the call has to wait for a slot or runs for more than 30 seconds. */
+  async call<T>(fn: () => Promise<T> | undefined, label?: string): Promise<T> {
+    if (label && !this._semaphore.available) {
+      outputChannel.appendLine(
+        `${label}: waiting for a free slot (${this._maxConcurrent} in progress, ${this._semaphore.waiting} already waiting)`
+      );
+    }
     // Acquire a slot in the semaphore. Will not reject.
     await this._semaphore.acquire();
+    const slowTimer = label
+      ? setTimeout(() => outputChannel.appendLine(`${label}: still in progress after 30 seconds`), 30000)
+      : undefined;
     try {
       // Execute the provided function
       return (await fn())!;
     } finally {
       // Always release the slot in the semaphore after the function completes
+      if (slowTimer) clearTimeout(slowTimer);
       this._semaphore.release();
     }
   }
