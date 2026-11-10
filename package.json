@@ -2,7 +2,7 @@
   "name": "vscode-objectscript",
   "displayName": "InterSystems ObjectScript",
   "description": "InterSystems ObjectScript language support for Visual Studio Code",
-  "version": "3.8.7-SNAPSHOT",
+  "version": "3.8.8-SNAPSHOT",
   "icon": "images/logo.png",
   "aiKey": "InstrumentationKey=9cd75d51-697c-406c-a929-2bcf46e97c64;IngestionEndpoint=https://eastus2-4.in.applicationinsights.azure.com/;LiveEndpoint=https://eastus2.livediagnostics.monitor.azure.com/;ApplicationId=a431c56f-8ccc-4b99-b5e9-fce3763215b1",
   "categories": [
@@ -1166,6 +1166,27 @@
           "required": [
             "active"
           ],
+          "dependencies": {
+            "password": [
+              "username"
+            ]
+          },
+          "allOf": [
+            {
+              "not": {
+                "required": [
+                  "username",
+                  "password"
+                ],
+                "properties": {
+                  "username": {
+                    "pattern": "^[Uu][Nn][Kk][Nn][Oo][Ww][Nn][Uu][Ss][Ee][Rr]$"
+                  }
+                }
+              },
+              "errorMessage": "'password' must not be set when 'username' is 'UnknownUser' (unauthenticated access)."
+            }
+          ],
           "properties": {
             "active": {
               "type": "boolean",
@@ -1207,7 +1228,7 @@
             },
             "username": {
               "type": "string",
-              "description": "Username to connect as. If not set here it must be provided when connecting."
+              "description": "Username to connect as. Set to 'UnknownUser' for unauthenticated access. If not set here it must be provided when connecting."
             },
             "password": {
               "type": "string",
@@ -1719,7 +1740,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@intersystems-community/intersystems-servermanager": "^3.14.1",
+    "@intersystems-community/intersystems-servermanager": "^3.16.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.13.14",
     "@types/semver": "^7.8.0",
@@ -1746,7 +1767,6 @@
     "@vscode/extension-telemetry": "^1.5.2",
     "@xmldom/xmldom": "^0.9.12",
     "axios": "^1.20.0",
-    "minimatch": "^10.2.6",
     "node-cmd": "^6.0.1",
     "semver": "^7.8.5",
     "ws": "^8.22.0"
